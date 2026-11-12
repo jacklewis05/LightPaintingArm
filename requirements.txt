@@ -1,0 +1,6 @@
+numpy
+trimesh
+opencv-python-headless
+pyserial
+fastapi
+uvicorn[standard]

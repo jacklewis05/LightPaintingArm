@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Light Painting Arm</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+  <aside id="panel">
+    <h1>Light Painting Arm</h1>
+
+    <section>
+      <h2>1 · Source</h2>
+      <div id="drop">
+        <p id="src-name">Drop a 3D model or an image here</p>
+        <button id="pick">Choose file…</button>
+        <input type="file" id="file" hidden
+               accept=".stl,.obj,.ply,.off,.glb,.png,.jpg,.jpeg,.bmp,.webp,.gif,.tif,.tiff">
+        <p class="hint">Try an example:
+          <a href="#" data-example="octahedron.obj">octahedron</a> ·
+          <a href="#" data-example="cube.obj">cube</a> ·
+          <a href="#" data-example="star.png">star image</a></p>
+      </div>
+      <div id="mesh-opts" class="rows" hidden>
+        <label>Edge angle <output id="feature_angle_out"></output>
+          <input type="range" id="feature_angle" min="0" max="90" step="1" value="20"></label>
+        <p class="hint">Draws edges where faces meet more sharply than this. 0 draws every triangle edge.</p>
+      </div>
+      <div id="image-opts" class="rows" hidden>
+        <label>Trace
+          <select id="image_mode">
+            <option value="edges">Edges (photos)</option>
+            <option value="outline">Outlines (logos, shapes)</option>
+            <option value="centerline">Centre lines (line drawings)</option>
+          </select></label>
+        <label>Detail <output id="detail_out"></output>
+          <input type="range" id="detail" min="0" max="1" step="0.05" value="0.5"></label>
+        <label class="check"><input type="checkbox" id="invert"> Light lines on a dark background</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>2 · Placement <button id="autofit" class="small">Auto-fit</button></h2>
+      <div class="grid3">
+        <label>Size mm<input type="number" id="size" value="200" min="5" step="5"></label>
+        <span></span><span></span>
+        <label>X<input type="number" id="x" value="300" step="5"></label>
+        <label>Y<input type="number" id="y" value="0" step="5"></label>
+        <label>Z<input type="number" id="z" value="250" step="5"></label>
+        <label>Rot X°<input type="number" id="rx" value="0" step="5"></label>
+        <label>Rot Y°<input type="number" id="ry" value="0" step="5"></label>
+        <label>Rot Z°<input type="number" id="rz" value="0" step="5"></label>
+      </div>
+      <p class="hint">X is forward from the base, Y is left, Z is up. Auto-fit finds the largest size the arm can reach.</p>
+    </section>
+
+    <section>
+      <h2>3 · Light</h2>
+      <div class="rows">
+        <label>Colour
+          <span class="inline">
+            <select id="mode">
+              <option value="palette">One per stroke</option>
+              <option value="single">Single colour</option>
+              <option value="source">From the image</option>
+            </select>
+            <input type="color" id="color" value="#ffffff">
+          </span></label>
+        <label>Draw speed <output id="speed_out"></output>
+          <input type="range" id="speed" min="5" max="150" step="5" value="40"></label>
+        <label>Brightness <output id="brightness_out"></output>
+          <input type="range" id="brightness" min="0.05" max="1" step="0.05" value="1"></label>
+        <label class="check"><input type="checkbox" id="even_exposure" checked> Even exposure (dim the LED where the arm slows down)</label>
+        <label class="check"><input type="checkbox" id="return_home" checked> Return to the home pose when finished</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Plan</h2>
+      <dl id="stats"><dt>Nothing loaded yet</dt></dl>
+      <p id="warn" class="warn" hidden></p>
+    </section>
+
+    <section>
+      <h2>4 · Arm</h2>
+      <div class="inline">
+        <select id="port"></select>
+        <button id="refresh" class="small" title="Rescan serial ports">↻</button>
+        <button id="connect">Connect</button>
+      </div>
+      <div id="chips"></div>
+      <div class="inline">
+        <button id="home_marks" title="Line each joint up with its home mark (within a few degrees), then press this: the encoders work out the exact position">Home at marks</button>
+        <button id="home" title="Each joint seeks its hall sensor">Home (sensors)</button>
+      </div>
+      <div class="inline">
+        <button id="park" title="Move to the home pose">Go to home pose</button>
+        <button id="motors" title="Switch the motors off so the joints can be turned by hand; joints with encoders stay tracked">Release motors</button>
+      </div>
+      <div id="jog"></div>
+      <div id="encoders">
+        <span class="label" title="Encoder position minus step-count position, at the joint. It stays near zero until a motor misses steps.">Missed steps</span>
+        <span id="slip"></span>
+        <button id="resync" class="small" title="Take the encoders' word for where the arm is">Resync</button>
+      </div>
+      <p class="hint">First time: put every joint exactly on its mark, then
+        <a href="#" id="save_marks">save the marks</a>.</p>
+      <div class="inline run">
+        <label title="Wait at the start point before drawing, to open the camera shutter">Hold
+          <input type="number" id="hold" value="3" min="0" max="120" step="1"> s</label>
+        <button id="run" class="primary">Draw</button>
+        <button id="stop" class="danger">Stop</button>
+      </div>
+      <div id="progress"><div></div></div>
+      <p id="message" class="hint"></p>
+      <pre id="log"></pre>
+    </section>
+  </aside>
+
+  <main>
+    <canvas id="view"></canvas>
+    <div id="legend">
+      <span><i class="solid"></i> arm (live)</span>
+      <span><i class="ghost"></i> preview</span>
+      <span><i class="red"></i> out of reach</span>
+      <label><input type="checkbox" id="show_travel" checked> travel moves</label>
+    </div>
+    <div id="toast" hidden></div>
+    <footer>
+      <button id="play" title="Play the preview">▶</button>
+      <input type="range" id="scrub" min="0" max="0" value="0">
+      <span id="clock">0:00 / 0:00</span>
+      <select id="rate" title="Preview playback speed">
+        <option value="1">1×</option><option value="4" selected>4×</option>
+        <option value="16">16×</option><option value="64">64×</option>
+      </select>
+    </footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

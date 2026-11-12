@@ -1,0 +1,59 @@
+{
+  "geometry_mm": {
+    "shoulder_height": 140,
+    "shoulder_forward": 0,
+    "lateral_offset": 0,
+    "upper_arm": 190,
+    "forearm": 320,
+    "min_tip_height": 20
+  },
+  "elbow": "up",
+  "joints": [
+    {
+      "name": "base",
+      "min_deg": -150,
+      "max_deg": 150,
+      "home_deg": 0,
+      "direction": 1,
+      "max_speed_dps": 20,
+      "max_accel_dps2": 60,
+      "max_jump_dps": 2
+    },
+    {
+      "name": "shoulder",
+      "min_deg": 10,
+      "max_deg": 170,
+      "home_deg": 90,
+      "direction": 1,
+      "max_speed_dps": 20,
+      "max_accel_dps2": 60,
+      "max_jump_dps": 2
+    },
+    {
+      "name": "elbow",
+      "min_deg": -160,
+      "max_deg": -10,
+      "home_deg": -90,
+      "direction": 1,
+      "max_speed_dps": 20,
+      "max_accel_dps2": 60,
+      "max_jump_dps": 2
+    }
+  ],
+  "drive": {
+    "motor_steps_per_rev": 200,
+    "microsteps": 16,
+    "gear_ratio": 29
+  },
+  "motion": {
+    "sample_ms": 20,
+    "tip_accel_mm_s2": 400,
+    "resample_mm": 2.0
+  },
+  "encoders": {
+    "slip_warn_deg": 0.15
+  },
+  "serial": {
+    "baud": 115200
+  }
+}
