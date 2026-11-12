@@ -42,9 +42,18 @@ def rotation(rx: float, ry: float, rz: float) -> np.ndarray:
     return mz @ my @ mx
 
 
+def spin(axis: str, deg: float) -> np.ndarray:
+    """Rotation by deg about one world axis ('x', 'y' or 'z')."""
+    return rotation(*[deg if a == axis else 0.0 for a in "xyz"])
+
+
 def place(strokes: List[Stroke], pl: dict) -> List[Stroke]:
-    """Normalised strokes -> world millimetres using a placement dict."""
+    """Normalised strokes -> world millimetres using a placement dict.
+
+    The optional spin_axis / spin_deg turn the drawing about its own centre after the
+    rx, ry, rz rotation; animation frames differ only in spin_deg."""
     rot = rotation(pl.get("rx", 0), pl.get("ry", 0), pl.get("rz", 0))
+    rot = spin(pl.get("spin_axis", "z"), pl.get("spin_deg", 0.0)) @ rot
     centre = np.array([pl["x"], pl["y"], pl["z"]], float)
     return [Stroke((s.pts * pl["size"]) @ rot.T + centre, s.rgb, s.closed) for s in strokes]
 

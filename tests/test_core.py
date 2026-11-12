@@ -59,6 +59,21 @@ def test_cube_has_twelve_edges():
     assert sum(len(s.pts) - 1 for s in every) == 18
 
 
+def test_obj_line_elements_are_drawn_as_written():
+    obj = b"v 0 0 0\nv 1 0 0\nv 1 1 0\nl 1 2 3 1\nl -1 -3\nf 1 2 3\n"
+    strokes = load_mesh_strokes(obj, "obj", 20)
+    assert [len(s.pts) for s in strokes] == [4, 2]
+    assert strokes[0].closed and not strokes[1].closed
+    assert np.allclose(strokes[1].pts, [[1, 1, 0], [0, 0, 0]])
+
+
+def test_rotunda_example_is_a_line_drawing():
+    strokes = load_mesh_strokes((EX / "rotunda.obj").read_bytes(), "obj", 20)
+    assert 20 <= len(strokes) <= 60
+    pts = np.vstack([s.pts for s in strokes])
+    assert pts[:, 2].max() > 14 and pts[:, 0].max() > 17        # dome on top, portico toward +X
+
+
 def test_image_modes_find_the_star():
     data = (EX / "star.png").read_bytes()
     for mode in ("edges", "outline", "centerline"):
@@ -115,6 +130,22 @@ def test_unreachable_parts_are_reported():
     job = planner.plan(cfg, [far])
     assert job.stats["unreachable_mm"] > 300 and job.stats["draw_mm"] > 100
     assert np.linalg.norm(job.tip[job.path >= 0], axis=1).max() < 700
+
+
+def test_animation_frames_spin_about_the_centre():
+    strokes, _ = normalize(load_mesh_strokes((EX / "octahedron.obj").read_bytes(), "obj", 20))
+    spins = [("z", 15.0 * i) for i in range(24)]
+    pl = planner.autofit(cfg, strokes, {"rx": 20, "ry": 0, "rz": 0}, spins=spins)
+    centre = np.array([pl["x"], pl["y"], pl["z"]])
+    first = np.vstack([s.pts for s in place(strokes, pl)])
+    for axis, deg in spins[::5]:
+        frame = place(strokes, dict(pl, spin_axis=axis, spin_deg=deg))
+        pts = np.vstack([s.pts for s in frame])
+        # turning in place: every point keeps its distance from the centre
+        assert np.allclose(np.linalg.norm(pts - centre, axis=1), np.linalg.norm(first - centre, axis=1))
+        assert planner.plan(cfg, frame).stats["unreachable_mm"] == 0                   # every frame fits
+    quarter = np.vstack([s.pts for s in place(strokes, dict(pl, spin_axis="z", spin_deg=90))])
+    assert np.allclose(quarter[:, 0] - centre[0], -(first[:, 1] - centre[1]), atol=1e-6)
 
 
 def test_travel_profile():

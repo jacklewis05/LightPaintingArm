@@ -13,6 +13,8 @@ everything works with nothing plugged in.
 
 1. **Source** – drop an STL / OBJ / PLY / GLB model or a PNG / JPG image (or click an example).
    Models are drawn as their sharp edges; images are traced as edges, outlines or centre lines.
+   An OBJ that contains line elements (`l 1 2 3 …`) is drawn exactly as written, one stroke
+   per line, which is the way to hand-author a drawing (see `examples/make_examples.py`).
 2. **Placement** – *Auto-fit* finds the largest size the arm can reach. Anything shown in
    red is out of reach and will be skipped.
 3. **Light** – colours, draw speed and brightness. *Even exposure* dims the LED wherever the
@@ -20,6 +22,15 @@ everything works with nothing plugged in.
 4. **Arm** – pick the ESP32's serial port, *Connect*, *Home*, then *Draw*. *Hold* is how long
    the arm waits at the start point so you can open the shutter. "Exposure needed" in the
    plan is how long the shutter has to stay open.
+
+   *Animation* turns the drawing a little further for each frame, for stop-motion: set the
+   number of frames, the turn per frame and the axis, scrub *Preview frame* to check each
+   one, and *Auto-fit* sizes the drawing so every frame is reachable. *Draw all frames* draws
+   them in turn, one long exposure each; between frames it waits for *Next frame* (or a set
+   number of seconds) while you close the shutter and re-open it.
+5. **Speed** – a live override from 10% to 200% of the planned speed. It scales drawing,
+   travel and jogging, works mid-drawing (it takes about a second to take effect), and stays
+   set between runs. Above 100% the arm exceeds the limits in `arm_config.json`.
 
 The timeline at the bottom scrubs through the plan (blue ghost arm). The solid arm is always
 the real arm's reported position, and while it draws, the lines light up as it finishes them.

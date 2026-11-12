@@ -241,15 +241,23 @@ def plan(cfg: ArmConfig, strokes: List[Stroke], draw_speed: float = 40.0,
                np.concatenate(path_parts), [tuple(s.rgb) for s in strokes], unreachable, stats)
 
 
-def autofit(cfg: ArmConfig, strokes: List[Stroke], rot: dict, max_size: float = 400.0) -> dict:
+def autofit(cfg: ArmConfig, strokes: List[Stroke], rot: dict, max_size: float = 400.0,
+            spins=(("z", 0.0),)) -> dict:
     """Find the placement (centre in the X-Z plane, plus size) that draws the normalised
-    strokes as large as possible with every point reachable."""
-    from .paths import rotation
+    strokes as large as possible with every point reachable.
+
+    spins lists the (axis, degrees) turn of every animation frame, so that one placement
+    fits them all."""
+    from .paths import rotation, spin
 
     pts = np.vstack([densify(s.pts, 0.03) for s in strokes if len(s.pts) > 1])
     if len(pts) > 6000:     # a sample is enough to find the fit; planning checks every point
         pts = pts[np.random.default_rng(0).choice(len(pts), 6000, replace=False)]
     pts = pts @ rotation(rot.get("rx", 0), rot.get("ry", 0), rot.get("rz", 0)).T
+    spins = list(spins)[:: max(1, len(spins) // 12)]        # a dozen frames is enough to bound them all
+    if len(pts) * len(spins) > 12000:
+        pts = pts[:: int(np.ceil(len(pts) * len(spins) / 12000))]
+    pts = np.vstack([pts @ spin(axis, deg).T for axis, deg in spins])
     reach = cfg.l1 + cfg.l2
 
     def fits(x, z, size):

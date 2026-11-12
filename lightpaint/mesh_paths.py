@@ -1,4 +1,7 @@
-"""3D model -> wireframe strokes: keep the sharp and boundary edges, chain them into long strokes."""
+"""3D model -> wireframe strokes: keep the sharp and boundary edges, chain them into long strokes.
+
+An OBJ file that contains line elements ("l 1 2 3 ...") is treated as a ready-made line
+drawing instead: each line element becomes one stroke, exactly as written."""
 from __future__ import annotations
 
 import io
@@ -79,7 +82,31 @@ def chain_edges(vertices: np.ndarray, edges: np.ndarray) -> List[np.ndarray]:
     return trails
 
 
+def load_obj_lines(data: bytes) -> List[Stroke]:
+    """Strokes from the line elements of an OBJ file (empty list if it has none)."""
+    verts, lines = [], []
+    for raw in data.decode("utf-8", "replace").splitlines():
+        parts = raw.split()
+        if not parts:
+            continue
+        if parts[0] == "v" and len(parts) >= 4:
+            verts.append([float(x) for x in parts[1:4]])
+        elif parts[0] == "l" and len(parts) >= 3:
+            lines.append([int(p.split("/")[0]) for p in parts[1:]])
+    strokes = []
+    for line in lines:
+        idx = [i - 1 if i > 0 else len(verts) + i for i in line]     # OBJ counts from 1; negatives count back
+        if min(idx) < 0 or max(idx) >= len(verts):
+            raise ValueError("this OBJ has a line that refers to a vertex that does not exist")
+        strokes.append(Stroke(np.array([verts[i] for i in idx], float), closed=idx[0] == idx[-1]))
+    return strokes
+
+
 def load_mesh_strokes(data: bytes, ext: str, feature_angle: float = 20.0) -> List[Stroke]:
+    if ext == "obj":
+        drawn = load_obj_lines(data)
+        if drawn:
+            return drawn
     mesh = trimesh.load(io.BytesIO(data), file_type=ext, force="mesh")
     if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
         raise ValueError("this file has no triangles to take edges from")

@@ -49,6 +49,14 @@ The PC plans everything; the ESP32 is a dumb segment player.
   LED brightness is scaled by tip speed ("even exposure").
 - `server.stream` keeps the firmware's 64-segment queue topped up using the `done` counter
   from status lines. Segments carry a sequence number; the firmware rejects gaps.
+- An OBJ with `l` line elements bypasses edge detection: each element is one stroke, drawn
+  as written (`load_obj_lines`). `examples/make_examples.py` generates `rotunda.obj` this
+  way, and `uva_logo.png`; edit the generator, not the outputs.
+- Animation = the same drawing with an extra spin about a world axis per frame
+  (`paths.place` spin_axis / spin_deg). `server.animate` plans and draws frames one at a
+  time; the viewer follows via `run.frame` in the status and `GET /api/job`.
+- The live speed control (`S.speed`, 0.1–2.0) only changes each segment's duration in
+  `server.stream`; the plan itself is untouched. Above 1.0 it exceeds the config limits.
 - Encoder error ("slip") = encoder position − step count. It is reported and corrected
   between moves (`trust_encoders`), never during one.
 
@@ -84,7 +92,8 @@ The PC plans everything; the ESP32 is a dumb segment player.
 ## Verifying changes
 
 - Core logic: `tests/test_core.py`.
-- Viewer and server: start the server, then drive headless Chrome over the DevTools
+- Viewer and server: start a server on a spare port (`--port 8799 --no-browser`; Jack may
+  have his own copy running on 8765, so never kill that one), then drive headless Chrome over the DevTools
   protocol (`--headless=new --use-angle=swiftshader --enable-unsafe-swiftshader
   --remote-debugging-port=…`) to click, read the DOM, capture screenshots and collect
   console errors. `?example=octahedron.obj` loads an example on open. `POST /api/sim_slip`

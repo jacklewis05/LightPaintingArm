@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.staticfiles import StaticFiles
 
 from . import planner
-from .config import ArmConfig, ROOT
+from .config import ArmConfig, FIRMWARE_TICK_HZ, ROOT
 from .device import QUEUE_SIZE, SerialDevice, SimDevice, list_serial_ports
 from .image_paths import IMAGE_TYPES, load_image_strokes, suggest_mode
 from .kinematics import fk
@@ -19,6 +19,8 @@ from .mesh_paths import MESH_TYPES, load_mesh_strokes
 from .paths import colorize, normalize, parse_hex, place
 
 WINDOW = QUEUE_SIZE - 16     # segments allowed in flight; the margin covers status-report lag
+SPEED_MIN, SPEED_MAX = 0.1, 2.0      # range of the live speed control
+SPEED_SLEW = 0.03            # largest change in speed per segment, so a big jump is ramped in
 
 cfg = ArmConfig.load()
 app = FastAPI()
@@ -36,6 +38,9 @@ class State:
         self.device = None
         self.task: Optional[asyncio.Task] = None
         self.run = {"state": "idle", "label": "", "progress": 0.0, "k": None, "message": ""}
+        self.speed = 1.0          # live speed control: 1.0 plays moves exactly as planned
+        self.frame = 0            # animation frame that self.job was planned for
+        self.next_frame: Optional[asyncio.Event] = None
 
 
 S = State()
@@ -98,30 +103,32 @@ async def api_load(request: Request, name: str):
     return info
 
 
-@app.post("/api/autofit")
-def api_autofit(body: dict):
-    strokes = load_source(body.get("source", {}))
-    pl = body.get("placement", {})
-    rot = {k: float(pl.get(k, 0)) for k in ("rx", "ry", "rz")}
-    return planner.autofit(cfg, strokes, rot)
+def animation(body: dict):
+    """(number of frames, turn axis, degrees per frame) from a request; 1 frame = no animation."""
+    anim = body.get("animation", {})
+    frames = int(np.clip(int(anim.get("frames", 1)), 1, 360))
+    axis = anim.get("axis", "z") if anim.get("axis") in ("x", "y", "z") else "z"
+    return frames, axis, float(anim.get("step", 0.0))
 
 
-@app.post("/api/plan")
-def api_plan(body: dict):
-    if busy():
-        fail(409, "the arm is moving; stop it before changing the plan")
+def build_job(body: dict, frame: int) -> planner.Job:
+    """Plan one frame of the drawing described by a request from the viewer."""
     strokes = load_source(body.get("source", {}))
+    frames, axis, step = animation(body)
     pl = {k: float(v) for k, v in body["placement"].items()}
+    pl.update(spin_axis=axis, spin_deg=step * frame)
     light = body.get("light", {})
     colored = colorize(strokes, light.get("mode", "palette"), parse_hex(light.get("color", "#ffffff")))
-    job = planner.plan(
+    return planner.plan(
         cfg, place(colored, pl),
         draw_speed=max(1.0, float(light.get("speed", 40))),
         brightness=float(np.clip(light.get("brightness", 1.0), 0.0, 1.0)),
         even_exposure=bool(light.get("even_exposure", True)),
         return_home=bool(light.get("return_home", True)),
     )
-    S.job = job
+
+
+def job_json(job: planner.Job) -> dict:
     return {
         "dt": job.dt,
         "tip": np.round(job.tip, 1).ravel().tolist(),
@@ -130,9 +137,36 @@ def api_plan(body: dict):
         "stroke_rgb": job.stroke_rgb,
         "unreachable": [np.round(u, 1).ravel().tolist() for u in job.unreachable],
         "stats": job.stats,
-        "source": {"name": S.file_name, "kind": S.kind, "strokes": len(strokes),
+        "frame": S.frame,
+        "source": {"name": S.file_name, "kind": S.kind, "strokes": len(S.strokes),
                    "size": [round(float(v), 2) for v in S.source_size]},
     }
+
+
+@app.post("/api/autofit")
+def api_autofit(body: dict):
+    strokes = load_source(body.get("source", {}))
+    pl = body.get("placement", {})
+    rot = {k: float(pl.get(k, 0)) for k in ("rx", "ry", "rz")}
+    frames, axis, step = animation(body)
+    return planner.autofit(cfg, strokes, rot, spins=[(axis, step * i) for i in range(frames)])
+
+
+@app.post("/api/plan")
+def api_plan(body: dict):
+    if busy():
+        fail(409, "the arm is moving; stop it before changing the plan")
+    frame = int(np.clip(int(body.get("frame", 0)), 0, animation(body)[0] - 1))
+    S.job, S.frame = build_job(body, frame), frame
+    return job_json(S.job)
+
+
+@app.get("/api/job")
+def api_job():
+    """The plan currently loaded (during an animation: the frame being drawn)."""
+    if S.job is None:
+        fail(404, "no plan yet")
+    return job_json(S.job)
 
 
 # ---------------------------------------------------------------- device control
@@ -168,22 +202,28 @@ async def trust_encoders():
 
 
 async def stream(q: np.ndarray, rgb: np.ndarray, label: str, job_from: Optional[int] = None,
-                 hold_s: float = 0.0):
+                 hold_s: float = 0.0, extra: Optional[dict] = None) -> str:
     """Feed samples to the device, keeping its queue topped up, until every one has run.
 
     q[0] must be the pose the arm is in now. job_from is the index in q where the planned
     job starts (after the approach move); the viewer uses it to light up finished strokes.
-    hold_s pauses at that point with the arm still, e.g. to open the camera shutter."""
+    hold_s pauses at that point with the arm still, e.g. to open the camera shutter.
+    extra is added to the run status shown in the viewer. Returns "done", "stopped" or "failed"."""
     dev = S.device
     steps = cfg.deg_to_steps(q)
     total = len(q) - 1
-    S.run = {"state": "running", "label": label, "progress": 0.0, "k": None, "message": ""}
+    S.run = dict({"state": "running", "label": label, "progress": 0.0, "k": None, "message": ""},
+                 **(extra or {}))
     try:
         dev.new_job()
         await asyncio.sleep(0.2)      # let any status line from before the reset drain
         sent, held, stalled = 0, hold_s <= 0 or job_from is None, time.monotonic()
         last_done = -1
         worst = [0.0, 0.0, 0.0]       # largest encoder disagreement seen on each joint
+        # The live speed control stretches or shrinks each segment's duration. `rate`
+        # follows S.speed gradually, and `owed` carries the rounding to whole milliseconds.
+        rate, owed = S.speed, 0.0
+        step_change = np.abs(np.diff(steps, axis=0)).max(axis=1)
         while True:
             st = dev.status()
             for j, d in enumerate(slip_deg(st)):
@@ -213,7 +253,13 @@ async def stream(q: np.ndarray, rgb: np.ndarray, label: str, job_from: Optional[
             burst = 0
             while sent < limit and sent - done < WINDOW and burst < 24:
                 k = sent + 1
-                dev.segment(sent, steps[k], cfg.sample_ms, rgb[k])
+                rate += float(np.clip(S.speed - rate, -SPEED_SLEW * rate, SPEED_SLEW * rate))
+                owed += cfg.sample_ms / rate
+                # never ask for more steps than the firmware can generate in the time
+                fastest = int(np.ceil(step_change[sent] * 1000.0 / (0.9 * FIRMWARE_TICK_HZ)))
+                ms = max(1, fastest, int(round(owed)))
+                owed -= ms
+                dev.segment(sent, steps[k], ms, rgb[k])
                 sent += 1
                 burst += 1
             S.run["progress"] = done / total
@@ -224,16 +270,19 @@ async def stream(q: np.ndarray, rgb: np.ndarray, label: str, job_from: Optional[
                   if abs(w) > cfg.slip_warn]
         note = " finished" + (", but missed steps: " + ", ".join(missed) if missed else "")
         S.run = {"state": "idle", "label": "", "progress": 1.0, "k": None, "message": label + note}
+        return "done"
     except asyncio.CancelledError:
         dev.abort()
         S.run = {"state": "idle", "label": "", "progress": 0.0, "k": None, "message": label + " stopped"}
+        return "stopped"
     except Exception as exc:
         dev.abort()
         S.run = {"state": "idle", "label": "", "progress": 0.0, "k": None,
                  "message": "%s failed: %s" % (label, exc)}
+        return "failed"
 
 
-def start_move(q, rgb, label, job_from=None, hold_s=0.0):
+def check_ready():
     if busy():
         fail(409, "the arm is already moving")
     st = device().status()
@@ -245,7 +294,56 @@ def start_move(q, rgb, label, job_from=None, hold_s=0.0):
         fail(409, "the motors are released; hold them first")
     if st["state"] != "idle":
         fail(409, "the arm is busy (%s)" % st["state"])
+
+
+def start_move(q, rgb, label, job_from=None, hold_s=0.0):
+    check_ready()
     S.task = asyncio.create_task(stream(q, rgb, label, job_from, hold_s))
+
+
+def with_approach(job: planner.Job):
+    """The job's samples with a dark move from the arm's current pose put in front.
+    Returns (q, rgb, index where the job itself starts)."""
+    lead = approach(job.q[0])
+    q = np.vstack([lead, job.q[1:]])
+    rgb = np.vstack([np.zeros((len(lead), 3), np.uint8), job.rgb[1:]])
+    return q, rgb, len(lead) - 1
+
+
+async def animate(body: dict, first: int, hold_s: float, gap_s: float):
+    """Draw every animation frame in turn, one long exposure each. Between frames the arm
+    waits gap_s seconds for the camera, or for the Next frame button when gap_s is 0."""
+    frames = animation(body)[0]
+    idle = {"state": "idle", "label": "", "progress": 0.0, "k": None}
+    try:
+        for i in range(first, frames):
+            S.job, S.frame = build_job(body, i), i
+            label = "frame %d of %d" % (i + 1, frames)
+            if S.job.stats["strokes"]:
+                await trust_encoders()
+                q, rgb, job_from = with_approach(S.job)
+                result = await stream(q, rgb, label, job_from, hold_s, {"frame": i, "frames": frames})
+                if result != "done":
+                    return
+            if i + 1 < frames:
+                wait = gap_s <= 0
+                S.run = dict(idle, state="running", label=label, progress=1.0, frame=i, frames=frames,
+                             waiting=wait, message="%s done. %s" % (
+                                 label, "Press Next frame when the camera is ready." if wait
+                                 else "Next frame in %.0f s." % gap_s))
+                if wait:
+                    S.next_frame = asyncio.Event()
+                    await S.next_frame.wait()
+                else:
+                    await asyncio.sleep(gap_s)
+        S.run = dict(idle, message="animation finished: %d frames" % (frames - first))
+    except asyncio.CancelledError:
+        S.device.abort()
+        S.run = dict(idle, message="animation stopped at frame %d" % (S.frame + 1))
+    except Exception as exc:
+        S.device.abort()
+        detail = exc.detail if isinstance(exc, HTTPException) else exc
+        S.run = dict(idle, message="animation failed at frame %d: %s" % (S.frame + 1, detail))
 
 
 def approach(target_q):
@@ -375,12 +473,41 @@ async def api_run(body: dict):
     if job is None or len(job.q) < 2:
         fail(409, "nothing to draw: load a file and make sure some of it is reachable")
     await trust_encoders()
-    lead = approach(job.q[0])
-    q = np.vstack([lead, job.q[1:]])
-    rgb = np.vstack([np.zeros((len(lead), 3), np.uint8), job.rgb[1:]])
-    start_move(q, rgb, "drawing", job_from=len(lead) - 1,
+    q, rgb, job_from = with_approach(job)
+    start_move(q, rgb, "drawing", job_from=job_from,
                hold_s=float(np.clip(body.get("hold_s", 0), 0, 120)))
     return {}
+
+
+@app.post("/api/animate")
+async def api_animate(body: dict):
+    """Draw the animation from the given frame onward. body is the viewer's settings plus
+    frame (where to start), hold_s and gap_s."""
+    frames = animation(body)[0]
+    if frames < 2:
+        fail(409, "set more than one frame to animate")
+    load_source(body.get("source", {}))
+    check_ready()
+    first = int(np.clip(int(body.get("frame", 0)), 0, frames - 1))
+    S.task = asyncio.create_task(animate(
+        body, first, float(np.clip(body.get("hold_s", 0), 0, 120)),
+        float(np.clip(body.get("gap_s", 0), 0, 600))))
+    return {}
+
+
+@app.post("/api/next_frame")
+async def api_next_frame():
+    if S.next_frame is not None:
+        S.next_frame.set()
+    return {}
+
+
+@app.post("/api/speed")
+async def api_speed(body: dict):
+    """Live speed control, as a fraction of the planned speed. Takes effect within about a
+    second during a move (the segments already queued on the arm play out first)."""
+    S.speed = float(np.clip(float(body["factor"]), SPEED_MIN, SPEED_MAX))
+    return {"speed": S.speed}
 
 
 @app.post("/api/stop")
@@ -403,7 +530,7 @@ async def ws(sock: WebSocket):
     await sock.accept()
     try:
         while True:
-            msg = {"connected": S.device is not None, "run": S.run}
+            msg = {"connected": S.device is not None, "run": S.run, "speed": S.speed}
             dev = S.device
             if dev is not None:
                 st = dev.status()
@@ -424,5 +551,15 @@ async def ws(sock: WebSocket):
         pass
 
 
-app.mount("/examples", StaticFiles(directory=str(ROOT / "examples")), name="examples")
-app.mount("/", StaticFiles(directory=str(ROOT / "web"), html=True), name="web")
+class FreshFiles(StaticFiles):
+    """Static files that the browser must re-check every time, so an updated viewer or
+    example is never served stale from its cache."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/examples", FreshFiles(directory=str(ROOT / "examples")), name="examples")
+app.mount("/", FreshFiles(directory=str(ROOT / "web"), html=True), name="web")

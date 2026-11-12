@@ -299,13 +299,15 @@ function clock(seconds) {
 }
 
 function showStats() {
+  if (!job) return;
   const s = job.stats, src = job.source;
+  const f = liveSpeed / 100;       // times are shown at the current arm speed
   const rows = [
     ['Source', `${src.strokes} strokes from ${src.kind}`],
     ['Lines drawn', `${(s.draw_mm / 1000).toFixed(2)} m in ${s.strokes} strokes`],
-    ['Drawing time', clock(s.draw_s)],
-    ['Dark travel', clock(s.travel_s)],
-    ['Exposure needed', clock(s.total_s)],
+    ['Drawing time', clock(s.draw_s / f)],
+    ['Dark travel', clock(s.travel_s / f)],
+    [`Exposure needed${liveSpeed === 100 ? '' : ` at ${liveSpeed}%`}`, clock(s.total_s / f)],
   ];
   $('stats').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   const warnings = [];
@@ -330,7 +332,13 @@ const value = (id) => {
   return el.type === 'number' || el.type === 'range' ? Number(el.value) : el.value;
 };
 const collect = (ids) => Object.fromEntries(ids.map((id) => [id, value(id)]));
-const settings = () => ({ source: collect(SOURCE_IDS), placement: collect(PLACE_IDS), light: collect(LIGHT_IDS) });
+const ANIM_IDS = ['frames', 'step', 'axis'];
+const frameCount = () => Math.max(1, Math.min(360, Math.round(value('frames')) || 1));
+const settings = () => ({
+  source: collect(SOURCE_IDS), placement: collect(PLACE_IDS), light: collect(LIGHT_IDS),
+  animation: { ...collect(ANIM_IDS), frames: frameCount() },
+  frame: Math.min(value('frame'), frameCount() - 1),
+});
 
 let loaded = false, planTimer, planSerial = 0;
 function showOutputs() {
@@ -339,6 +347,13 @@ function showOutputs() {
   $('speed_out').textContent = `${value('speed')} mm/s`;
   $('brightness_out').textContent = `${Math.round(value('brightness') * 100)}%`;
   $('color').style.visibility = value('mode') === 'single' ? 'visible' : 'hidden';
+  const frames = frameCount();
+  $('frame').max = frames - 1;
+  if (value('frame') > frames - 1) $('frame').value = frames - 1;
+  $('frame-row').hidden = frames < 2;
+  $('animate-row').hidden = frames < 2;
+  $('frame_out').textContent = `${value('frame') + 1} of ${frames}`;
+  $('run').textContent = frames < 2 ? 'Draw' : `Draw frame ${value('frame') + 1}`;
 }
 
 async function replan() {
@@ -360,7 +375,8 @@ async function autofit() {
   await replan();
 }
 
-async function loadFile(name, data) {
+// rot: optional [rx, ry, rz] to start with instead of the default for this kind of file
+async function loadFile(name, data, rot) {
   const info = await api(`/api/load?name=${encodeURIComponent(name)}`, null, data);
   loaded = true;
   $('src-name').textContent = name;
@@ -370,14 +386,14 @@ async function loadFile(name, data) {
   if (info.image_mode) $('image_mode').value = info.image_mode;
   $('mode').querySelector('[value=source]').disabled = info.kind !== 'image';
   // A model looks best tilted so no edges hide behind each other; an image faces the camera.
-  $('rx').value = info.kind === 'mesh' ? 20 : 0;
-  $('ry').value = 0;
-  $('rz').value = info.kind === 'mesh' ? 30 : 0;
+  [$('rx').value, $('ry').value, $('rz').value] = rot ?? (info.kind === 'mesh' ? [20, 0, 30] : [0, 0, 0]);
   showOutputs();
   await autofit();
 }
 
-for (const id of [...SOURCE_IDS, ...PLACE_IDS, ...LIGHT_IDS]) $(id).addEventListener('input', schedulePlan);
+for (const id of [...SOURCE_IDS, ...PLACE_IDS, ...LIGHT_IDS, ...ANIM_IDS, 'frame']) {
+  $(id).addEventListener('input', schedulePlan);
+}
 $('autofit').onclick = guard(autofit);
 $('pick').onclick = () => $('file').click();
 $('file').onchange = guard(async () => {
@@ -397,7 +413,8 @@ for (const link of document.querySelectorAll('[data-example]')) {
   link.onclick = guard(async (e) => {
     e.preventDefault();
     const name = link.dataset.example;
-    await loadFile(name, await (await fetch(`/examples/${name}`)).arrayBuffer());
+    const rot = link.dataset.rot?.split(',').map(Number);
+    await loadFile(name, await (await fetch(`/examples/${name}`)).arrayBuffer(), rot);
   });
 }
 
@@ -440,6 +457,29 @@ $('save_marks').onclick = guard(async (e) => {
 });
 $('run').onclick = guard(() => { playing = false; return api('/api/run', { hold_s: value('hold') }); });
 $('stop').onclick = guard(() => api('/api/stop'));
+$('animate').onclick = guard(() => {
+  playing = false;
+  return api('/api/animate', { ...settings(), hold_s: value('hold'), gap_s: value('gap') });
+});
+$('next_frame').onclick = guard(() => api('/api/next_frame'));
+
+// During an animation the server plans each frame itself; fetch the one it is drawing so
+// the preview and the live progress match.
+let fetchingFrame = false;
+async function followFrame(frame) {
+  if (fetchingFrame || (job && job.frame === frame)) return;
+  fetchingFrame = true;
+  try {
+    const next = await (await fetch('/api/job')).json();
+    if (next.frame === frame) {
+      $('frame').value = frame;
+      showOutputs();
+      showJob(next);
+    }
+  } finally {
+    fetchingFrame = false;
+  }
+}
 
 function buildJog() {
   const button = (i, d) => `<button data-joint="${i}" data-delta="${d}">${d > 0 ? '+' : ''}${d}°</button>`;
@@ -451,6 +491,28 @@ function buildJog() {
   }
 }
 
+// ------------------------------------------------------------------ live speed
+
+let liveSpeed = 100;          // percent of planned speed, mirrored from the server
+let speedTouched = 0;         // when the slider was last moved, so status updates don't fight it
+let speedTimer;
+
+function showSpeed(percent) {
+  liveSpeed = percent;
+  $('live_speed').value = percent;
+  $('live_speed_out').textContent = `${percent}%`;
+  showStats();
+}
+function setSpeed(percent) {
+  speedTouched = performance.now();
+  showSpeed(percent);
+  clearTimeout(speedTimer);     // while dragging, send at most every 80 ms
+  speedTimer = setTimeout(guard(() => api('/api/speed', { factor: percent / 100 })), 80);
+}
+$('live_speed').oninput = () => setSpeed(Number($('live_speed').value));
+$('speed_reset').onclick = () => setSpeed(100);
+for (const b of document.querySelectorAll('[data-speed]')) b.onclick = () => setSpeed(Number(b.dataset.speed));
+
 // ------------------------------------------------------------------ live status
 
 let status = { connected: false, run: { state: 'idle' } };
@@ -459,6 +521,10 @@ function chip(text, kind = '') { return `<span class="chip ${kind}">${text}</spa
 
 function onStatus(next) {
   status = next;
+  if (next.speed !== undefined && performance.now() - speedTouched > 1000) {
+    const percent = Math.round(next.speed * 100);
+    if (percent !== liveSpeed) showSpeed(percent);
+  }
   const running = next.run.state === 'running';
   const ready = next.connected && next.online && next.homed && next.state === 'idle' && !running;
   $('connect').textContent = next.connected ? 'Disconnect' : 'Connect';
@@ -470,6 +536,10 @@ function onStatus(next) {
   $('motors').textContent = next.connected && !next.motors ? 'Hold motors' : 'Release motors';
   $('park').disabled = !ready || !next.motors;
   $('run').disabled = !ready || !next.motors || !job || job.stats.strokes === 0;
+  $('animate').disabled = !ready || !next.motors || !job;
+  $('next_frame').hidden = !(running && next.run.waiting);
+  for (const id of [...ANIM_IDS, 'frame']) $(id).disabled = running;
+  if (running && next.run.frame !== undefined) followFrame(next.run.frame);
   $('stop').disabled = !next.connected;
   // Jogging works before homing too (slowly, without limits) so joints can be put on their marks.
   for (const b of $('jog').querySelectorAll('button')) b.disabled = !idle || !next.motors;
@@ -511,7 +581,7 @@ function onStatus(next) {
 
   // While the arm draws, the playhead follows what it has actually finished.
   const wasLive = liveRun;
-  liveRun = running && next.run.k !== null;
+  liveRun = running && next.run.k !== null && (next.run.frame === undefined || (job && job.frame === next.run.frame));
   if (liveRun) setPlayhead(next.run.k);
   else if (wasLive && job) setPlayhead(job.path.length - 1);
 }
@@ -551,12 +621,16 @@ async function start() {
   scene.add(liveArm.root, ghostArm.root);
   buildJog();
   showOutputs();
+  showSpeed(100);
   resize();
   await refreshPorts();
   openSocket();
   requestAnimationFrame(frame);
   // http://127.0.0.1:8765/?example=octahedron.obj opens with that example loaded
   const example = new URLSearchParams(location.search).get('example');
-  if (example) await loadFile(example, await (await fetch(`/examples/${example}`)).arrayBuffer());
+  if (example) {
+    const rot = document.querySelector(`[data-example="${example}"]`)?.dataset.rot?.split(',').map(Number);
+    await loadFile(example, await (await fetch(`/examples/${example}`)).arrayBuffer(), rot);
+  }
 }
 start().catch((err) => toast(err.message));

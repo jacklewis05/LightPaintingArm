@@ -21,7 +21,9 @@
         <p class="hint">Try an example:
           <a href="#" data-example="octahedron.obj">octahedron</a> ·
           <a href="#" data-example="cube.obj">cube</a> ·
-          <a href="#" data-example="star.png">star image</a></p>
+          <a href="#" data-example="star.png">star image</a> ·
+          <a href="#" data-example="rotunda.obj" data-rot="0,0,-35">Rotunda</a> ·
+          <a href="#" data-example="uva_logo.png">V and sabres</a></p>
       </div>
       <div id="mesh-opts" class="rows" hidden>
         <label>Edge angle <output id="feature_angle_out"></output>
@@ -54,6 +56,22 @@
         <label>Rot Z°<input type="number" id="rz" value="0" step="5"></label>
       </div>
       <p class="hint">X is forward from the base, Y is left, Z is up. Auto-fit finds the largest size the arm can reach.</p>
+    </section>
+
+    <section>
+      <h2>Animation</h2>
+      <div class="grid3">
+        <label>Frames<input type="number" id="frames" value="1" min="1" max="360" step="1"></label>
+        <label>Turn per frame°<input type="number" id="step" value="15" step="1"></label>
+        <label>About axis
+          <select id="axis"><option value="z">Z (up)</option><option value="x">X</option><option value="y">Y</option></select></label>
+      </div>
+      <div id="frame-row" class="rows" hidden>
+        <label>Preview frame <output id="frame_out"></output>
+          <input type="range" id="frame" min="0" max="0" step="1" value="0"></label>
+      </div>
+      <p class="hint">Stop-motion: each frame is the drawing turned a little further, shot as its own
+        long exposure. 1 frame = a single drawing. 24 frames × 15° is one full turn.</p>
     </section>
 
     <section>
@@ -113,9 +131,31 @@
         <button id="run" class="primary">Draw</button>
         <button id="stop" class="danger">Stop</button>
       </div>
+      <div id="animate-row" class="inline run" hidden>
+        <label title="Pause after each frame so the camera can save and you can re-open the shutter. 0 = wait until you press Next frame.">Between frames
+          <input type="number" id="gap" value="0" min="0" max="600" step="1"> s</label>
+        <button id="animate" class="primary" title="Draw every frame from the previewed one onward">Draw all frames</button>
+      </div>
       <div id="progress"><div></div></div>
       <p id="message" class="hint"></p>
       <pre id="log"></pre>
+    </section>
+
+    <section id="speed-section">
+      <h2>5 · Speed <button id="speed_reset" class="small">Reset to 100%</button></h2>
+      <div class="rows">
+        <label>Arm speed <output id="live_speed_out"></output>
+          <input type="range" id="live_speed" min="10" max="200" step="5" value="100"></label>
+      </div>
+      <div class="inline presets">
+        <button class="small" data-speed="25">25%</button>
+        <button class="small" data-speed="50">50%</button>
+        <button class="small" data-speed="75">75%</button>
+        <button class="small" data-speed="100">100%</button>
+        <button class="small" data-speed="150">150%</button>
+      </div>
+      <p class="hint">Scales every move, live, even mid-drawing (allow about a second).
+        Above 100% exceeds the limits in arm_config.json.</p>
     </section>
   </aside>
 
@@ -127,6 +167,7 @@
       <span><i class="red"></i> out of reach</span>
       <label><input type="checkbox" id="show_travel" checked> travel moves</label>
     </div>
+    <button id="next_frame" class="primary" hidden>Frame done — press when the camera is ready for the next ▶</button>
     <div id="toast" hidden></div>
     <footer>
       <button id="play" title="Play the preview">▶</button>
