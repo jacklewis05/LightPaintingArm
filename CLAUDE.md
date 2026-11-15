@@ -101,6 +101,26 @@ The PC plans everything; the ESP32 is a dumb segment player.
 - Firmware can only be compile-checked here. Say so when reporting; nothing in `firmware/`
   has been run on the real arm unless Jack reports it.
 
+## Portfolio updates
+
+Jack keeps a running write-up of this project on his portfolio site and wants it updated
+as the project continues.
+
+- Repo: github.com/jacklewis05/jack-lewis-engineering (React + Vite, GitHub Pages). The
+  page is the `robotic-arm` entry in `src/content.js`: a `content` list of paragraphs,
+  `{ heading }`, `{ image, caption }`, `{ images: [...] }`, `{ list }` and `{ video }`
+  blocks. Images go in `public/images/robotic-arm/` as JPGs of about 1600 px wide.
+- Add new progress at the bottom of the entry, in the page's existing voice: first person,
+  plain, concrete numbers, short paragraphs. Don't claim results the hardware hasn't
+  produced. Don't link the LightPaintingArm repo; it is private.
+- Clone into the scratchpad with `git clone --depth 1`; the full history is slow because
+  of the videos.
+- There is no Node on this Mac, so `npm run build` can't run. Check that `content.js` still
+  parses by importing it in headless Chrome, with an import map that points `lucide-react`
+  at a stub exporting the icon names it imports.
+- Pushing to `main` publishes the live site (john-lewis-engineering.me) within a couple of
+  minutes. Ask Jack before every push to it.
+
 ## Current state
 
 - Never run on hardware as of 2026-11-11. The geometry, limits and home angles in
